@@ -15,6 +15,7 @@
 rm(list=ls())
 graphics.off()
 
+library(MASS)
 library(glmnet)
 library(ggplot2)
 library(gtsummary)
@@ -274,10 +275,10 @@ pacientes$AXL_cat <- cut(pacientes$AXL,
                      breaks=c(-1, 1, 3),
                      labels=c('<Mediana', '>Mediana'))
 pacientes$BAP1_cat <- cut(pacientes$BAP1,
-                          breaks=c(0, 1, 5.4),
+                          breaks=c(-1, 1, 5.4),
                           labels=c('<Mediana', '>Mediana'))
 pacientes$CA9_cat <- cut(pacientes$CA9,
-                         breaks=c(0, 1, 5.5),
+                         breaks=c(-1, 1, 5.5),
                          labels=c('<Mediana', '>Mediana'))
 
 #
@@ -339,15 +340,27 @@ pacientes %>%
 # REGRESION LOGISTICA                 #
 #                                     #
 #######################################
+# En grupo pronóstico agrupo intermedio/malo, 
+# porque hay sólo dos pacientes en el grupo "malo"
+pacientes$GrupoPronostico_MSKCC_en1lineaTKI[pacientes$GrupoPronostico_MSKCC_en1lineaTKI == "Intermedio"] <- "Intermedio/Malo"
+pacientes$GrupoPronostico_MSKCC_en1lineaTKI[pacientes$GrupoPronostico_MSKCC_en1lineaTKI == "Malo"] <- "Intermedio/Malo"
+
+pacientes$sexo = relevel(as.factor(pacientes$sexo), ref="Mujer")
+#pacientes$AXL_cat = relevel(as.factor(pacientes$AXL_cat), ref=">Mediana")
+
 # usamos la variable: pacientes$PE_1erTKI_0No_1Si
-model1 <- glm(PE_1erTKI_0No_1Si ~ sexo + Age_1erTKI + GrupoPronostico_MSKCC_en1lineaTKI + 
+model1 <- glm(PE_1erTKI_0No_1Si ~ sexo + 
+                Age_1erTKI + GrupoPronostico_MSKCC_en1lineaTKI + 
               X1erTKI_cual + Mejor_Respuesta + Tipo_Histologico + 
-              AXL_cat + BAP1_cat + CA9_cat +
+              AXL_cat +
+              BAP1_cat + CA9_cat +
+              #AXL + BAP1 + CA9 +
               nefrectomia, pacientes, family = binomial)
 
 tbl_regression(model1, 
                exponentiate = TRUE,
-               label = list(sexo ~ "Sexo",
+               label = list(sexo	 ~ "Sexo",
+                            #AXL_cat ~ "AXL_cat",
                             Age_1erTKI ~ "Edad",
                             GrupoPronostico_MSKCC_en1lineaTKI ~ "Grupo pronóstico",
                             X1erTKI_cual ~ "Tratamiento Primera Línea", 
@@ -363,6 +376,66 @@ tbl_regression(model1,
   modify_header(label ~ "**Variable**") %>%
   italicize_levels()
 
+#
+#######################################
+#                                     #
+# REGRESION LOGISTICA - STEPWISE      #
+#                                     #
+#######################################
+#
+step.model <- stepAIC(model1, direction = "both", 
+                      trace = FALSE)
+summary(step.model)
+#glm(formula = PE_1erTKI_0No_1Si ~ sexo + GrupoPronostico_MSKCC_en1lineaTKI + 
+#      X1erTKI_cual + AXL_cat + BAP1_cat, family = binomial, data = pacientes)
+
+
+tbl_regression(step.model, 
+               exponentiate = TRUE,
+               label = list(sexo	 ~ "Sexo",
+                            GrupoPronostico_MSKCC_en1lineaTKI ~ "Grupo pronóstico",
+                            X1erTKI_cual ~ "Tratamiento Primera Línea"
+               ),
+) %>%
+  #add_nevent() %>% # add number of events of the outcome
+  bold_p(t = 0.05) %>%
+  bold_labels() %>%
+  modify_caption("**Tabla 5. Análisis multivariado con regresión logística (stepwise)**") %>%
+  modify_header(label ~ "**Variable**") %>%
+  italicize_levels()
+
+#
+#######################################
+#                                     #
+# REGRESION LOGISTICA - LASSO         #
+#                                     #
+#######################################
+#
+# Prepare predictor matrix and outcome variable
+x <- model.matrix(PE_1erTKI_0No_1Si ~ sexo + 
+                    Age_1erTKI + GrupoPronostico_MSKCC_en1lineaTKI + 
+                    X1erTKI_cual + Mejor_Respuesta + Tipo_Histologico + 
+                    AXL_cat +
+                    BAP1_cat + CA9_cat +nefrectomia, data = pacientes)[, -1]
+y <- as.numeric(pacientes$PE_1erTKI_0No_1Si)  # Ensure binary outcome is numeric (0,1)
+
+# Perform Lasso logistic regression
+fit.lasso <- glmnet(x, y, family="binomial", alpha=1)
+lasso_model <- cv.glmnet(x, y, family = "binomial", alpha = 1)
+
+# Best lambda value
+best_lambda_1 <- lasso_model$lambda.min
+best_lambda_2 <- lasso_model$lambda.1se
+
+best_lambda_1
+best_lambda_2
+
+# Coefficients of the Lasso model with best lambda
+coef(lasso_model, s = best_lambda_1)
+coef(lasso_model, s = best_lambda_2)
+
+plot(lasso_model)
+plot(fit.lasso)
 
 #
 #######################################
@@ -388,7 +461,7 @@ curva_1 <- ggsurvplot(km_fit_1,
                       legend = c("bottom"),
                       title = "Curva de Kaplan-Meier - Tiempo libre de enfermedad",
                       xlab = "Tiempo (días)",
-                      ylab = "Supervivencia (probabilidad)",
+                      ylab = "Libre de Enfermedad (probabilidad)",
                       risk.table.title="Pacientes en riesgo",
                       censor = FALSE
 )
@@ -410,6 +483,8 @@ curva_1$plot +
         plot.subtitle = element_text(size = 9, hjust = 0.5, color = "grey40"),
         plot.caption = element_text(size = 7.5, color = "grey40"))
 
+ggsave("Figuras/Figura_7.png", height = 6, width = 8)
+
 tbl_survfit(
   survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ 1, data=pacientes),
   probs = 0.5,
@@ -419,3 +494,289 @@ tbl_survfit(
   modify_header(label ~ "**Supervivencia**") %>%
   italicize_levels()
 
+#
+#######################################
+#                                     #
+# CURVA SUPERVIVENCIA (II)            #
+#                                     #
+#######################################
+#
+# la variable "recaida" (progresión de la enfermedad)
+# tiene que volver a ser
+# número, porque si no, el análisis de supervivencia no sale
+# usamos la variable: pacientes$PE_1erTKI_0No_1Si
+
+km_fit_1 <- survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ AXL_cat, data=pacientes)
+
+curva_1 <- ggsurvplot(km_fit_1, 
+                      data = pacientes, 
+                      risk.table = TRUE, 
+                      conf.int = TRUE,
+                      #pval=TRUE,
+                      pval="log-rank test \n p=0.06",
+                      surv.median.line = "hv", # Specify median survival
+                      palette = c("#E7B800","#2E9FDF"),# custom color palettes
+                      ggtheme = theme_bw(),
+                      legend = c("bottom"),
+                      title = "Estimador de Kaplan-Meier - Tiempo libre de enfermedad",
+                      xlab = "Tiempo (días)",
+                      ylab = "Libre de Enfermedad (probabilidad)",
+                      risk.table.title="Pacientes en riesgo",
+                      legend.title="", # elimina "strata"
+                      risk.table.col = "strata",# Risk table color by groups
+                      #legend.labs = c("Baja expresión AXL", "Alta expresión AXL"),    # Change legend labels
+                      censor = FALSE,
+                      #break.time.by=730.5 #cada 2 años, contando el bisiesto
+)
+curva_1$plot + 
+  theme_bw() +
+  scale_linetype_manual(values = c("solid","dashed", "solid", "dotted", "dotdash")) +
+  #scale_colour_manual(values = c("steelblue","red","red","red")) +
+  labs(title = "Estimador de Kaplan-Meier - Expresión de AXL",
+       subtitle="Tiempo libre de enfermedad")+  
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="bottom") +
+  theme(legend.title = element_blank()) +
+  theme(panel.background = element_rect(colour = "black"),
+        axis.text=element_text(size=8),  #tamaño de las fechas
+        axis.title.x = element_text(vjust=-0.2),
+        axis.title.y = element_text(vjust=+0.6),
+        axis.title=element_text(size=10,face="bold"), #tamaño de los títulos de los ejes
+        plot.title = element_text(size = 11, hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(size = 9, hjust = 0.5, color = "grey40"),
+        plot.caption = element_text(size = 7.5, color = "grey40"))
+
+ggsave("Figuras/Figura_8.png", height = 6, width = 8)
+
+tbl_survfit(
+  survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ AXL_cat, data=pacientes),
+  probs = 0.5,
+  label_header = "**Mediana de Surpervivencia**"
+) %>%
+  #bold_labels() %>%
+  modify_header(label ~ "**Supervivencia**") %>%
+  italicize_levels()
+
+#
+#######################################
+#                                     #
+# CURVA SUPERVIVENCIA (III)           #
+#                                     #
+#######################################
+#
+# la variable "recaida" (progresión de la enfermedad)
+# tiene que volver a ser
+# número, porque si no, el análisis de supervivencia no sale
+# usamos la variable: pacientes$PE_1erTKI_0No_1Si
+
+km_fit_1 <- survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ BAP1_cat, data=pacientes)
+
+curva_1 <- ggsurvplot(km_fit_1, 
+                      data = pacientes, 
+                      risk.table = TRUE, 
+                      conf.int = TRUE,
+                      #pval=TRUE,
+                      pval="log-rank test \n p=0.16",
+                      surv.median.line = "hv", # Specify median survival
+                      palette = c("#E7B800", "#AF4623"),# custom color palettes
+                      ggtheme = theme_bw(),
+                      legend = c("bottom"),
+                      title = "Estimador de Kaplan-Meier - Tiempo libre de enfermedad",
+                      xlab = "Tiempo (días)",
+                      ylab = "Libre de Enfermedad (probabilidad)",
+                      risk.table.title="Pacientes en riesgo",
+                      legend.title="", # elimina "strata"
+                      risk.table.col = "strata",# Risk table color by groups
+                      legend.labs = c("Baja expresión BAP1", "Alta expresión BAP1"),    # Change legend labels
+                      censor = FALSE
+)
+curva_1$plot + 
+  theme_bw() +
+  scale_linetype_manual(values = c("solid","dashed", "solid", "dotted", "dotdash")) +
+  #scale_colour_manual(values = c("steelblue","red","red","red")) +
+  labs(title = "Estimador de Kaplan-Meier - Expresión de BAP1",
+       subtitle="Tiempo libre de enfermedad")+  
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="bottom") +
+  theme(legend.title = element_blank()) +
+  theme(panel.background = element_rect(colour = "black"),
+        axis.text=element_text(size=8),  #tamaño de las fechas
+        axis.title.x = element_text(vjust=-0.2),
+        axis.title.y = element_text(vjust=+0.6),
+        axis.title=element_text(size=10,face="bold"), #tamaño de los títulos de los ejes
+        plot.title = element_text(size = 11, hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(size = 9, hjust = 0.5, color = "grey40"),
+        plot.caption = element_text(size = 7.5, color = "grey40"))
+
+ggsave("Figuras/Figura_9.png", height = 6, width = 8)
+
+#
+#######################################
+#                                     #
+# CURVA SUPERVIVENCIA (IV)            #
+#                                     #
+#######################################
+#
+# la variable "recaida" (progresión de la enfermedad)
+# tiene que volver a ser
+# número, porque si no, el análisis de supervivencia no sale
+# usamos la variable: pacientes$PE_1erTKI_0No_1Si
+
+km_fit_1 <- survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ CA9_cat, data=pacientes)
+
+curva_1 <- ggsurvplot(km_fit_1, 
+                      data = pacientes, 
+                      risk.table = TRUE, 
+                      conf.int = TRUE,
+                      #pval=TRUE,
+                      pval="log-rank test \n p=0.018",
+                      surv.median.line = "hv", # Specify median survival
+                      palette = c("#E7B800", "#1A7332"),# custom color palettes
+                      ggtheme = theme_bw(),
+                      legend = c("bottom"),
+                      title = "Estimador de Kaplan-Meier - Tiempo libre de enfermedad",
+                      xlab = "Tiempo (días)",
+                      ylab = "Libre de Enfermedad (probabilidad)",
+                      risk.table.title="Pacientes en riesgo",
+                      legend.title="", # elimina "strata"
+                      risk.table.col = "strata",# Risk table color by groups
+                      legend.labs = c("Baja expresión CA9", "Alta expresión CA9"),    # Change legend labels
+                      censor = FALSE
+)
+curva_1$plot + 
+  theme_bw() +
+  scale_linetype_manual(values = c("solid","dashed", "solid", "dotted", "dotdash")) +
+  #scale_colour_manual(values = c("steelblue","red","red","red")) +
+  labs(title = "Estimador de Kaplan-Meier - Expresión de CA9",
+       subtitle="Tiempo libre de enfermedad")+  
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="bottom") +
+  theme(legend.title = element_blank()) +
+  theme(panel.background = element_rect(colour = "black"),
+        axis.text=element_text(size=8),  #tamaño de las fechas
+        axis.title.x = element_text(vjust=-0.2),
+        axis.title.y = element_text(vjust=+0.6),
+        axis.title=element_text(size=10,face="bold"), #tamaño de los títulos de los ejes
+        plot.title = element_text(size = 11, hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(size = 9, hjust = 0.5, color = "grey40"),
+        plot.caption = element_text(size = 7.5, color = "grey40"))
+
+ggsave("Figuras/Figura_10.png", height = 6, width = 8)
+
+#
+#######################################
+#                                     #
+# CURVA SUPERVIVENCIA (V)             #
+#                                     #
+#######################################
+#
+# la variable "recaida" (progresión de la enfermedad)
+# tiene que volver a ser
+# número, porque si no, el análisis de supervivencia no sale
+# usamos la variable: pacientes$PE_1erTKI_0No_1Si
+
+km_fit_1 <- survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ BestResp_RCRP0vsPEEE1, data=pacientes)
+
+curva_1 <- ggsurvplot(km_fit_1, 
+                      data = pacientes, 
+                      risk.table = TRUE, 
+                      conf.int = TRUE,
+                      #pval=TRUE,
+                      pval="log-rank test \n p=0.001",
+                      surv.median.line = "hv", # Specify median survival
+                      palette = c("#26456E", "#E7B800"),# custom color palettes
+                      ggtheme = theme_bw(),
+                      legend = c("bottom"),
+                      title = "Estimador de Kaplan-Meier - Tiempo libre de enfermedad",
+                      xlab = "Tiempo (días)",
+                      ylab = "Libre de Enfermedad (probabilidad)",
+                      risk.table.title="Pacientes en riesgo",
+                      legend.title="", # elimina "strata"
+                      risk.table.col = "strata",# Risk table color by groups
+                      legend.labs = c("Respuesta Parcial o Completa", "Progresión"),    # Change legend labels
+                      censor = FALSE
+)
+curva_1$plot + 
+  theme_bw() +
+  scale_linetype_manual(values = c("solid","dashed", "solid", "dotted", "dotdash")) +
+  #scale_colour_manual(values = c("steelblue","red","red","red")) +
+  labs(title = "Estimador de Kaplan-Meier - Respuesta al Tratamiento",
+       subtitle="Tiempo libre de enfermedad")+  
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="bottom") +
+  theme(legend.title = element_blank()) +
+  theme(panel.background = element_rect(colour = "black"),
+        axis.text=element_text(size=8),  #tamaño de las fechas
+        axis.title.x = element_text(vjust=-0.2),
+        axis.title.y = element_text(vjust=+0.6),
+        axis.title=element_text(size=10,face="bold"), #tamaño de los títulos de los ejes
+        plot.title = element_text(size = 11, hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(size = 9, hjust = 0.5, color = "grey40"),
+        plot.caption = element_text(size = 7.5, color = "grey40"))
+
+ggsave("Figuras/Figura_11.png", height = 6, width = 8)
+
+
+tbl_survfit(
+  survfit(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si) ~ BestResp_RCRP0vsPEEE1, data=pacientes),
+  probs = 0.5,
+  label_header = "**Mediana de Surpervivencia**"
+) %>%
+  #bold_labels() %>%
+  modify_header(label ~ "**Supervivencia**") %>%
+  italicize_levels()
+
+
+#
+#######################################
+#                                     #
+# REGRESION DE COX                    #
+#                                     #
+#######################################
+#
+# Volvemos a poner la referencia de AXL en su sitio:
+#pacientes$AXL_cat = relevel(as.factor(pacientes$AXL_cat), ref="<Mediana")
+
+cox.clasico <- coxph(Surv(PFS_1erTKI_days, PE_1erTKI_0No_1Si)~ 
+                       #sexo + 
+                       #Age_1erTKI + GrupoPronostico_MSKCC_en1lineaTKI + 
+                       #Tipo_Histologico + 
+                       Mejor_Respuesta +
+                       AXL_cat +
+                       BAP1_cat + CA9_cat,
+                       #+nefrectomia, 
+                       data = pacientes,na.action=na.exclude)
+summary(cox.clasico)
+
+
+
+
+tabla_cox <- tbl_regression(cox.clasico, exponentiate = TRUE) %>%
+  #add_n() %>%
+  modify_caption("**Tabla 6. Hazard Ratios Ajustados**") %>%
+  modify_header(label = "**Variable**") %>% # update the column header
+  bold_labels() %>%
+  bold_p(t = 0.05) %>%
+  italicize_levels()
+tabla_cox
+
+
+############
+############
+step.model.cox <- stepAIC(cox.clasico, direction = "both")
+summary(step.model.cox)
+
+
+tbl_regression(step.model.cox, 
+               exponentiate = TRUE,
+               label = list(sexo	 ~ "Sexo",
+                            GrupoPronostico_MSKCC_en1lineaTKI ~ "Grupo pronóstico",
+                            X1erTKI_cual ~ "Tratamiento Primera Línea"
+               ),
+) %>%
+  #add_nevent() %>% # add number of events of the outcome
+  bold_p(t = 0.05) %>%
+  bold_labels() %>%
+  modify_caption("**Tabla 6. Hazard Ratios Ajustados**") %>%
+  modify_header(label ~ "**Variable**") %>%
+  italicize_levels()
